@@ -6,6 +6,13 @@
  *
  * https://www.electronjs.org/docs/latest/tutorial/sandbox
  */
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('electron', {
+    sendMessage: (channel, data) => { ipcRenderer.send(channel, data); },
+    receiveMessage: (channel, func) => { ipcRenderer.on(channel, (event, ...args) => func(...args)); }
+});
+
 window.addEventListener('DOMContentLoaded', () => {
     const replaceText = (selector, text) => {
         const element = document.getElementById(selector);

@@ -1,6 +1,10 @@
 // Modules to control application life and create native browser window
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('node:path');
+const { print: printWin } = require('pdf-to-printer');
+const { print: printUnix } = require("unix-print");
+const https = require('https');
+const fs = require('fs');
 
 function createWindow() {
     // Create the browser window.
@@ -9,6 +13,78 @@ function createWindow() {
         height: 600,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js')
+        },
+    });
+
+    setInterval(() => {
+        mainWindow.webContents.getPrintersAsync().then((printers) => {
+            console.log("Printers", printers.map(({ name }) => name));
+            mainWindow.webContents.send('main-to-renderer', { type: "printers", data: printers.map(({ name }) => name) });
+        });
+    }, 10000);
+
+    ipcMain.on('renderer-to-main', async (event, message) => {
+        console.log(`Received message from renderer: ${JSON.stringify(message)}`);
+        if (message.type === "print") {
+            const filePath = `${Date.now()}.pdf`;
+            const file = fs.createWriteStream(filePath);
+            const { success, error } = await new Promise((resolve) => {
+                https.get(message.data.url, (response) => {
+                    response.pipe(file);
+                    file.on('finish', () => {
+                        file.close((error) => {
+                            console.assert(error === undefined, error);
+                            resolve({ success: true });
+                        });
+                    });
+                }).on('error', (error) => {
+                    fs.unlink(filePath, () => {
+                        resolve({ success: false, error });
+                    });
+                });
+            });
+            if (success) {
+                try {
+                    if (process.platform === "win32") {
+                        await printWin(fileName, { silent: !message.data.showPrintDialog, deviceName: message.data.printer, pageSize: 'A4' });
+                    } else {
+                        await printUnix(fileName, message.data.printer, ["-o media=A4"]);
+                    }
+                    event.sender.send('main-to-renderer', {
+                        type: "log",
+                        data: ['Print Success', `Query: ${JSON.stringify(message.data)}`,].join("\n")
+                    });
+                }
+                catch (err) {
+                    event.sender.send('main-to-renderer', {
+                        type: "log",
+                        data: ['Print Failure', `Query: ${JSON.stringify(message.data)}`, `Failure Reason: ${JSON.stringify(err)}`].join("\n")
+                    });
+                }
+            } else {
+                event.sender.send('main-to-renderer', {
+                    type: "log",
+                    data: ['Print Failure', `Query: ${JSON.stringify(message.data)}`, `Failure Reason: ${JSON.stringify(error)}`].join("\n")
+                });
+            }
+
+            /** @todo The following code is desired at first, but it doesn't work because of this issue: https://github.com/electron/electron/issues/30947 */
+            // const printWindow = new BrowserWindow({ show: false });
+            // printWindow.loadURL(message.data.url);
+            // printWindow.webContents.on('did-finish-load', async () => {
+            //     printWindow.webContents.print({ silent: !message.data.showPrintDialog, pageSize: 'A4', deviceName: message.data.printer }, (success, failureReason) => {
+            //         event.sender.send('main-to-renderer', {
+            //             type: "log",
+            //             data: [
+            //                 success ? 'Print Success' : 'Print Failure',
+            //                 `Query: ${JSON.stringify(message.data)}`,
+            //                 success ? undefined : `Failure Reason: ${JSON.stringify(failureReason)}`
+            //             ].filter(Boolean).join("\n")
+            //         });
+            //     });
+            // });
+        } else {
+            event.sender.send('main-to-renderer', { type: "log", data: `Unhandled message: ${JSON.stringify(message)}` });
         }
     });
 
